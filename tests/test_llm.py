@@ -190,7 +190,8 @@ def test_fenced_reply_with_preamble_still_scores(capsys):
 
 def test_one_bad_batch_warns_and_the_run_continues(capsys):
     jobs = make_jobs(4)
-    stub = StubProvider(["I'd rather not answer that.", scores_reply(jobs[2:])])
+    # batch 1 is garbage twice (first reply + its one retry)
+    stub = StubProvider(["I'd rather not answer that.", "Still no.", scores_reply(jobs[2:])])
 
     llm.screen(jobs, PROFILE, batch_size=2, provider=stub, model="m")
 
@@ -200,10 +201,120 @@ def test_one_bad_batch_warns_and_the_run_continues(capsys):
 
 
 def test_a_provider_error_does_not_abort_screening():
+    """No second ask on a provider error: the provider already retried it."""
     jobs = make_jobs(4)
     stub = StubProvider([LLMError("HTTP 429 rate limited"), scores_reply(jobs[2:])])
     llm.screen(jobs, PROFILE, batch_size=2, provider=stub, model="m")
     assert jobs[3].score == 8.0
+    assert len(stub.calls) == 2
+
+
+def test_a_cut_off_reply_keeps_its_complete_scores_and_reasks_only_the_rest(capsys):
+    """The real failure: Gemini's JSON array stopped mid-object. The objects
+    that did arrive are good — keep them, re-ask only for the missing job."""
+    jobs = make_jobs(3)
+    cut = scores_reply(jobs)[:-40]                 # third object truncated
+    stub = StubProvider([cut, scores_reply(jobs[2:], score=6.0)])
+
+    llm.screen(jobs, PROFILE, batch_size=8, provider=stub, model="m")
+
+    assert [j.score for j in jobs] == [8.0, 8.0, 6.0]
+    assert [p["job_id"] for p in stub.payload(1)] == [jobs[2].job_id]
+    assert "failed" not in capsys.readouterr().out
+
+
+def test_a_job_the_model_skipped_gets_one_more_ask():
+    jobs = make_jobs(2)
+    stub = StubProvider([scores_reply(jobs[:1]), scores_reply(jobs[1:], score=7.0)])
+    llm.screen(jobs, PROFILE, batch_size=8, provider=stub, model="m")
+    assert [j.score for j in jobs] == [8.0, 7.0]
+    assert len(stub.calls) == 2
+
+
+def test_raw_newlines_inside_json_strings_still_parse():
+    jobs = make_jobs(1)
+    stub = StubProvider([f'[{{"job_id": "{jobs[0].job_id}", "score": 7, '
+                         f'"reason": "good\nfit"}}]'])
+    llm.screen(jobs, PROFILE, batch_size=8, provider=stub, model="m")
+    assert jobs[0].score == 7.0 and len(stub.calls) == 1
+
+
+def test_salvage_objects_skips_the_broken_tail():
+    raw = '[{"job_id": "a", "score": 1}, {"job_id": "b", "score": 2}, {"job_id": "c", "sc'
+    assert [o["job_id"] for o in llm.salvage_objects(raw)] == ["a", "b"]
+    assert llm.salvage_objects(None) == [] and llm.salvage_objects("no json") == []
+
+
+# ------------------------------------------------ provider retries --------
+
+class _Resp:
+    def __init__(self, status, body=None, headers=None):
+        self.status_code, self._body = status, body or {}
+        self.headers, self.text = headers or {}, json.dumps(body or {})
+
+    def json(self):
+        return self._body
+
+
+_GEMINI_OK = {"candidates": [{"finishReason": "STOP",
+                              "content": {"parts": [{"text": "[]"}]}}]}
+
+
+@pytest.fixture
+def fake_post(monkeypatch):
+    """Replays a list of responses / exceptions for providers.requests.post."""
+    monkeypatch.setenv("GEMINI_API_KEY", "test-key")
+    sleeps: list[float] = []
+    monkeypatch.setattr(providers.time, "sleep", sleeps.append)
+
+    def install(*outcomes):
+        queue = list(outcomes)
+
+        def post(url, **kw):
+            nxt = queue.pop(0)
+            if isinstance(nxt, Exception):
+                raise nxt
+            return nxt
+        monkeypatch.setattr(providers.requests, "post", post)
+        return queue
+    install.sleeps = sleeps
+    return install
+
+
+def test_gemini_rides_out_a_503_overload(fake_post, capsys):
+    fake_post(_Resp(503), _Resp(503), _Resp(200, _GEMINI_OK))
+    assert providers.GeminiProvider().complete("m", "", "hi", 100) == "[]"
+    assert fake_post.sleeps == [2, 8]
+    assert "gemini HTTP 503, retrying" in capsys.readouterr().out
+
+
+def test_retry_after_header_is_honoured_but_capped(fake_post):
+    fake_post(_Resp(429, headers={"Retry-After": "5"}), _Resp(429, headers={"Retry-After": "900"}),
+              _Resp(200, _GEMINI_OK))
+    providers.GeminiProvider().complete("m", "", "hi", 100)
+    assert fake_post.sleeps == [5, providers.MAX_RETRY_AFTER]
+
+
+def test_a_persistent_503_still_fails_after_the_retries(fake_post):
+    fake_post(*[_Resp(503)] * 4)
+    with pytest.raises(LLMError, match="HTTP 503"):
+        providers.GeminiProvider().complete("m", "", "hi", 100)
+    assert len(fake_post.sleeps) == len(providers.RETRY_WAITS)
+
+
+def test_a_bad_request_is_not_retried(fake_post):
+    left = fake_post(_Resp(400), _Resp(200, _GEMINI_OK))
+    with pytest.raises(LLMError, match="HTTP 400"):
+        providers.GeminiProvider().complete("m", "", "hi", 100)
+    assert fake_post.sleeps == [] and len(left) == 1
+
+
+def test_a_network_error_becomes_an_llm_error_not_a_crash(fake_post):
+    """requests.ConnectionError is not an LLMError, so before this it escaped
+    the per-batch handler and killed the run."""
+    fake_post(*[providers.requests.ConnectionError("reset")] * 4)
+    with pytest.raises(LLMError, match="unreachable"):
+        providers.GeminiProvider().complete("m", "", "hi", 100)
 
 
 # ----------------------------------------------------------------- draft ---

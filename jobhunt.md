@@ -31,6 +31,9 @@ the agent just does the finding, matching and drafting.
     greenhouse  GET https://boards-api.greenhouse.io/v1/boards/{slug}/jobs?content=true
     lever       GET https://api.lever.co/v0/postings/{slug}?mode=json
     ashby       GET https://api.ashbyhq.com/posting-api/job-board/{slug}?includeCompensation=true
+    smartrecruiters
+                GET https://api.smartrecruiters.com/v1/companies/{slug}/postings?limit=100&offset=N[&country=in]
+                GET https://api.smartrecruiters.com/v1/companies/{slug}/postings/{id}   (JD, on demand)
 
 Field mapping, since each is shaped differently:
 
@@ -46,6 +49,11 @@ Field mapping, since each is shaped differently:
   `descriptionPlain` (fall back to `descriptionHtml`), `publishedAt`,
   `compensation.compensationTierSummary`. **Skip anything with
   `isListed: false`** — those are drafts.
+- **SmartRecruiters** → `content[]`, paged by `offset` until `totalFound`,
+  with `id`, `name` (the title), `location.fullLocation` / `location.remote`,
+  `releasedDate`. No JD in the list: it is `jobAd.sections` on the detail
+  endpoint (`jobDescription` + `qualifications` + `additionalInformation`),
+  fetched by `hydrate()` only for jobs that survive the prefilter.
 
 Normalize all three into one dataclass with a globally unique
 `job_id = "{ats}:{slug}:{id}"` for dedupe.
@@ -119,8 +127,10 @@ Two gotchas I already hit — don't repeat them:
 ## Config
 
 `config.yaml` holds `include_titles` / `exclude_titles` (regex lists),
-`locations`, `allow_remote`, `max_age_days`, `score_threshold`,
-`max_per_digest`, `screen_batch_size`, and all file paths.
+`locations`, `allow_remote`, `remote_regions`, `abroad_needs_sponsorship`,
+`max_years_required`, `max_age_days`, `score_threshold`, `max_drafts`
+(`max_per_digest` is still read as a fallback), `screen_batch_size`, and all
+file paths.
 
 ## Deliverables
 

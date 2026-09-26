@@ -1,9 +1,3 @@
-# jobhunt configuration. Everything tunable lives here — no editing Python.
-#
-# Tune `filters` first. It is deterministic, free, and it is what keeps the
-# LLM bill small: roughly 2000 raw postings -> 40 candidates before a single
-# token is spent.
-
 filters:
   # Title regexes, matched case-insensitively against the job title only.
   # A title must match at least one include AND zero excludes.
@@ -11,9 +5,14 @@ filters:
   # Gotcha: "sde" as a bare regex does NOT match "Software Development
   # Engineer" — different words entirely. Use \bsde\b for the acronym and
   # list the spelled-out variants separately, as below.
+  #
+  # Indian boards say "Developer" as often as "Engineer" ("Backend Developer",
+  # "Full Stack Developer" are two of your target titles), so the stack
+  # patterns accept either word, in either order.
   include_titles:
-    - '\b(software|backend|back-end|server|platform|infrastructure|infra|systems|distributed|cloud)\b.*\bengineer\b'
-    - '\bengineer\b.*\b(backend|back-end|platform|infrastructure|infra|systems|distributed)\b'
+    - '\b(software|backend|back[\s-]?end|frontend|front[\s-]?end|full[\s-]?stack|web|server|platform|infrastructure|infra|systems|distributed|cloud|node(\.?js)?|javascript|typescript|react(\.?js)?|next(\.?js)?|python|java|golang)\b.*\b(engineer|developer)\b'
+    - '\b(engineer|developer)\b.*\b(backend|back[\s-]?end|frontend|front[\s-]?end|full[\s-]?stack|web|platform|infrastructure|infra|systems|distributed|node(\.?js)?|javascript|typescript|react(\.?js)?|next(\.?js)?|python|java|golang)\b'
+    - '\b(junior|jr|graduate|new grad|entry[\s-]level|associate)\b.*\b(engineer|developer)\b'
     - '\bsde\b'
     - '\bsde\s*-?\s*(i{1,3}|[123])\b'
     - 'software development engineer'
@@ -21,39 +20,65 @@ filters:
     - 'site reliability engineer'
     - '\bsre\b'
     - 'member of technical staff'
-    # systems / networking track — matches your DPDK, packet-processing and
-    # kernel background. Drop these if you widen away from low-level work.
-    - '\bnetwork(ing)?\s+(software\s+)?engineer\b'
-    - '\b(kernel|embedded|firmware|driver|packet|dataplane|data plane)\b.*\bengineer\b'
-    - '\bengineer\b.*\b(kernel|packet|dataplane|networking|performance)\b'
-    - '\bperformance engineer\b'
-    - '\bsystems engineer\b'
+    # The systems / networking track (network, kernel, embedded, firmware,
+    # packet, dataplane, performance) was removed: it pulled in network-ops and
+    # embedded roles that don't fit a full-stack profile. Re-add from git
+    # history if you move toward low-level work.
     - '\bc\+\+\b.*\bengineer\b'
     - '\bengineer\b.*\bc\+\+\b'
 
   # Anything matching these is dropped even if an include matched.
   exclude_titles:
     - '\b(staff|principal|distinguished|fellow|architect)\b'      # too senior for now
-    # "Senior" at 2.5 years is a consistent 3-4 from the screener — dropping it
-    # here is free, dropping it after an LLM call is not. Delete this line once
-    # you are ~4 years in, or if you want to stretch-apply anyway.
-    - '\bsenior\b'
+    # Senior / lead / level-3+ at ~1 year out of college is a consistent 3-4
+    # from the screener — dropping it here is free, dropping it after an LLM
+    # call is not. Loosen these once you are ~3-4 years in.
+    - '(\b|_)(senior|sr|lead)\b'    # the _ catches Bosch-style "IN_RBIC_Senior Engineer"
+    - '\b(sde|engineer|developer)\s*[-–,]?\s*(iii|iv|v|3|4|5)\b'  # SDE III, Engineer 3, SDE-4
     - '\b(director|vp|vice president|head of|chief|cto)\b'
     - '\b(manager|management)\b'
     - '\b(intern|internship|apprentice|trainee)\b'                # too junior
-    - '\b(sales|account executive|marketing|recruit|support|success)\b'
-    - '\b(frontend|front-end|ios|android|mobile|game|designer)\b' # wrong discipline
+    - '\b(sales|account executive|marketing|recruit|support|success|customer)\b'
+    - '\b(solutions?|application|security) engineer\b'           # presales / field / security track
+    - '\b(ios|android|mobile|game|designer)\b'                   # wrong discipline
+    - '\b(sdet|qa|quality assurance|in test|test engineer|tester)\b' # QA track, not dev
+    - '\b(salesforce|sap|abap|servicenow|mainframe|cobol)\b'      # enterprise-platform "developer" roles
     - '\b(data scientist|machine learning scientist|research scientist)\b'
 
-  # Substrings matched against "<location> <title>", case-insensitive.
-  # Leave empty to accept every location.
+  # --- where ---------------------------------------------------------------
+  # Home: whole words matched against "<location> <title>", case-insensitive
+  # ("india" does not match "Indiana"). Any job here passes, on-site or remote.
+  # Leave empty to accept every location and skip the rules below.
   locations:
-    - bangalore
+    - delhi
+    - new delhi
+    - ncr
+    - noida
+    - gurugram
+    - gurgaon
     - bengaluru
+    - bangalore
+    - hyderabad
     - india
 
-  # If true, anything reading as remote passes the location gate.
+  # Remote roles pass when they are open to you: the location names one of
+  # remote_regions, or names no region at all ("Remote"). Remote pinned to
+  # somewhere else ("Remote - US", "Canada; Remote") is dropped — and so is a
+  # bare "Remote" whose JD says you must live in / be authorized for another
+  # country.
   allow_remote: true
+  remote_regions: [worldwide, global, anywhere, apac, asia, asia pacific, asia-pacific]
+
+  # On-site / hybrid roles outside `locations` pass only when the JD offers
+  # visa sponsorship or relocation help, and does not say it won't. Set false
+  # to send every such role to the LLM instead (far more screening calls).
+  abroad_needs_sponsorship: true
+
+  # --- experience -----------------------------------------------------------
+  # Drop a job whose JD asks for more than this many years ("5+ years of
+  # experience"). You have ~1.5 (1 year full-time + 6-month internship), and a
+  # 3+ ask is a fair stretch. null disables the check.
+  max_years_required: 3
 
   # Drop postings older than this. Set to null to disable.
   # Boards often re-stamp `updated_at`, so this is a soft signal, not a promise.
@@ -63,8 +88,8 @@ filters:
 screen_batch_size: 8      # jobs per screening call. Higher = cheaper, sloppier.
 screen_jd_chars: 1400     # JD truncation for screening
 draft_jd_chars: 6000      # JD truncation for drafting
-score_threshold: 7.0      # below this, no draft and no digest slot
-max_per_digest: 5         # hard cap on expensive draft calls per run
+score_threshold: 7.0      # every job at or above this is emailed with its apply link
+max_drafts: 5             # full application kits (the expensive call) for the top N only
 
 # --- paths ------------------------------------------------------------------
 companies_file: companies.yaml

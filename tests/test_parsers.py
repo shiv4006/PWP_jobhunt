@@ -17,7 +17,9 @@ import yaml
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from jobhunt import mock
-from jobhunt.fetch import parse_ashby, parse_greenhouse, parse_lever, strip_html
+from jobhunt.fetch import (Job, hydrate, parse_ashby, parse_greenhouse, parse_lever,
+                           parse_smartrecruiters, smartrecruiters_description, strip_html)
+from jobhunt import fetch
 from jobhunt.mock import fetch_all_mock
 from jobhunt.prefilter import prefilter
 
@@ -92,11 +94,113 @@ def test_ashby_reads_compensation_and_html_fallback():
     assert "Causal inference" in ds.description   # descriptionHtml fallback
 
 
+def test_smartrecruiters_maps_fields_and_cleans_location():
+    jobs = parse_smartrecruiters("kitepay", "Kitepay", mock.SMARTRECRUITERS["kitepay"])
+    j = next(j for j in jobs if j.title == "Full Stack Developer")
+    assert j.job_id == "smartrecruiters:kitepay:744000100000001"
+    assert j.ats == "smartrecruiters"
+    assert j.location == "Hyderabad, India"          # not "Hyderabad, , India"
+    assert j.url == "https://jobs.smartrecruiters.com/Kitepay/744000100000001"
+    assert j.description == ""                        # list payload has no JD
+    sap = next(j for j in jobs if j.title == "SAP ABAP Developer")
+    assert sap.location == "Pune, MH, India (Remote)"
+
+
+def test_smartrecruiters_skips_non_public_postings():
+    body = {"content": [dict(mock.SMARTRECRUITERS["kitepay"]["content"][0],
+                             visibility="INTERNAL")]}
+    assert parse_smartrecruiters("kitepay", "Kitepay", body) == []
+
+
+def test_smartrecruiters_description_joins_sections_but_not_the_company_blurb():
+    text = smartrecruiters_description(mock.SMARTRECRUITERS_DETAIL["744000100000001"])
+    assert "Next.js" in text and "0-2 years" in text and "Hybrid" in text
+    assert "UPI rails" not in text
+    assert smartrecruiters_description(None) == ""
+
+
+class _FakeResp:
+    def __init__(self, body, status=200):
+        self.status_code, self._body = status, body
+
+    def json(self):
+        return self._body
+
+
+class _FakeSession:
+    """Answers from a {url: body} map and records every call."""
+    def __init__(self, routes):
+        self.routes, self.calls = routes, []
+
+    def get(self, url, params=None, **_):
+        self.calls.append((url, dict(params or {})))
+        body = self.routes(url, params or {}) if callable(self.routes) else self.routes.get(url)
+        return _FakeResp(body) if body is not None else _FakeResp({}, 404)
+
+
+def test_smartrecruiters_pages_until_totalFound():
+    postings = [{"id": str(i), "name": "Software Engineer", "visibility": "PUBLIC",
+                 "location": {"fullLocation": "Bengaluru, KA, India"}} for i in range(230)]
+
+    def routes(url, params):
+        off, lim = params["offset"], params["limit"]
+        return {"totalFound": len(postings), "content": postings[off:off + lim]}
+
+    sess = _FakeSession(routes)
+    jobs = fetch.fetch_board("smartrecruiters", "bigco", "BigCo", session=sess, country="in")
+    assert len(jobs) == 230
+    assert [p["offset"] for _, p in sess.calls] == [0, 100, 200]
+    assert all(p["country"] == "in" for _, p in sess.calls)
+
+
+def test_hydrate_fetches_only_missing_descriptions(monkeypatch):
+    monkeypatch.setattr(fetch.time, "sleep", lambda s: None)
+    detail = "https://api.smartrecruiters.com/v1/companies/kitepay/postings/744000100000001"
+    sess = _FakeSession({detail: mock.SMARTRECRUITERS_DETAIL["744000100000001"]})
+    sr = parse_smartrecruiters("kitepay", "Kitepay", mock.SMARTRECRUITERS["kitepay"])[:1]
+    gh = parse_greenhouse("acme-edge", "Acme Edge", mock.GREENHOUSE["acme-edge"])[:1]
+
+    assert hydrate(sr + gh, session=sess) == 1
+    assert "Next.js" in sr[0].description
+    assert [u for u, _ in sess.calls] == [detail]      # greenhouse already had its JD
+
+
+def test_hydrate_survives_a_dead_detail_endpoint(monkeypatch):
+    monkeypatch.setattr(fetch.time, "sleep", lambda s: None)
+    sr = parse_smartrecruiters("kitepay", "Kitepay", mock.SMARTRECRUITERS["kitepay"])[:1]
+    assert hydrate(sr, session=_FakeSession({})) == 0
+    assert sr[0].description == ""
+
+
+def test_every_parser_sets_a_direct_apply_link():
+    gh = parse_greenhouse("acme-edge", "Acme Edge", mock.GREENHOUSE["acme-edge"])[0]
+    assert gh.apply_url == "https://job-boards.greenhouse.io/embed/job_app?for=acme-edge&token=5501001"
+    lv = parse_lever("quantstack", "QuantStack", mock.LEVER["quantstack"])
+    assert lv[0].apply_url.endswith("/apply")            # the API's own applyUrl
+    assert lv[1].apply_url == lv[1].url + "/apply"       # no applyUrl -> hostedUrl + /apply
+    ab = parse_ashby("helioscale", "Helioscale", mock.ASHBY["helioscale"])[0]
+    assert ab.apply_url == ab.url + "/application"
+    sr = parse_smartrecruiters("kitepay", "Kitepay", mock.SMARTRECRUITERS["kitepay"])[0]
+    assert sr.apply_url == "https://jobs.smartrecruiters.com/Kitepay/744000100000001?oga=true"
+
+
+def test_hydrate_takes_the_detail_payloads_own_links(monkeypatch):
+    monkeypatch.setattr(fetch.time, "sleep", lambda s: None)
+    detail = "https://api.smartrecruiters.com/v1/companies/kitepay/postings/744000100000001"
+    body = dict(mock.SMARTRECRUITERS_DETAIL["744000100000001"],
+                postingUrl="https://jobs.smartrecruiters.com/Kitepay/744000100000001-full-stack",
+                applyUrl="https://jobs.smartrecruiters.com/Kitepay/744000100000001-full-stack?oga=true")
+    sr = parse_smartrecruiters("kitepay", "Kitepay", mock.SMARTRECRUITERS["kitepay"])[:1]
+    hydrate(sr, session=_FakeSession({detail: body}))
+    assert sr[0].url == body["postingUrl"]
+    assert sr[0].apply_url == body["applyUrl"]
+
+
 def test_job_ids_are_globally_unique_and_namespaced():
     jobs = fetch_all_mock()
     ids = [j.job_id for j in jobs]
     assert len(ids) == len(set(ids))
-    assert all(re.match(r"^(greenhouse|lever|ashby):[^:]+:.+$", i) for i in ids)
+    assert all(re.match(r"^(greenhouse|lever|ashby|smartrecruiters):[^:]+:.+$", i) for i in ids)
 
 
 def test_parsers_take_decoded_json_not_a_response():
@@ -105,6 +209,7 @@ def test_parsers_take_decoded_json_not_a_response():
     assert parse_greenhouse("x", "X", {}) == []
     assert parse_lever("x", "X", []) == []
     assert parse_ashby("x", "X", {}) == []
+    assert parse_smartrecruiters("x", "X", {}) == []
 
 
 # -------------------------------------------------------------- prefilter ---
@@ -115,6 +220,15 @@ def test_parsers_take_decoded_json_not_a_response():
     "Backend Engineer (Go)",
     "Site Reliability Engineer",
     "SDE II",
+    # "Developer" wording and the profile's own target titles
+    "Backend Developer",
+    "Full Stack Developer",
+    "Full-Stack Engineer",
+    "Frontend Engineer",
+    "Node.js Developer",
+    "Software Developer - Java",
+    "SDE-1",
+    "Associate Software Development Engineer (SDE)",
 ])
 def test_include_titles_match_real_titles(title):
     inc = FILTERS["include_titles"]
@@ -135,8 +249,18 @@ def test_bare_sde_regex_does_not_match_the_spelled_out_title():
     "Staff Software Engineer, Storage",       # too senior
     "Engineering Manager, Platform",          # management track
     "Enterprise Account Executive",           # wrong function
-    "Frontend Engineer, Design Systems",      # wrong discipline
     "Data Scientist, Growth",                 # wrong discipline
+    "Sr. Software Engineer",                  # too senior, abbreviated
+    "Lead Site Reliability Engineer",         # too senior
+    "SDE III - Data Engineering",             # level 3+
+    "Software Engineer 4",                    # level 3+
+    "SAP ABAP Developer",                     # enterprise-platform role
+    "Software Development Engineer in Test",  # QA track
+    "iOS Developer",                          # wrong discipline
+    "Associate Solutions Engineer, Okta",     # presales
+    "Application Security Engineer",          # security track
+    "Network Engineer II",                    # network ops, not software
+    "IN_RBIC_Senior Engineer_Application Engineer",  # Bosch-style underscores
 ])
 def test_junk_titles_are_rejected(title):
     inc, exc = FILTERS["include_titles"], FILTERS["exclude_titles"]
@@ -145,11 +269,14 @@ def test_junk_titles_are_rejected(title):
     assert excluded or not included, f"{title!r} would have survived"
 
 
-def test_full_mock_funnel_keeps_only_the_five_real_matches():
+def test_full_mock_funnel_keeps_only_the_real_matches():
     kept = prefilter(fetch_all_mock(), FILTERS)
     titles = sorted(j.title for j in kept)
     assert titles == [
         "Backend Engineer (Go)",
+        "Backend Engineer, Cards",                # London, but sponsors a visa
+        "Frontend Engineer, Design Systems",
+        "Full Stack Developer",
         "Site Reliability Engineer",
         "Software Development Engineer, Core Infra",
         "Software Engineer II, Distributed Systems",
@@ -171,7 +298,6 @@ def test_wrong_city_dropped_but_remote_kept():
 def test_allow_remote_is_what_lets_an_out_of_region_remote_role_through():
     """"Remote (India)" already matches the `india` location, so it is the
     wrong fixture for this. Use a remote role that names no allowed city."""
-    from jobhunt.fetch import Job
     remote = Job(job_id="lever:x:1", ats="lever", company="X",
                  title="Backend Engineer", location="Remote - Global",
                  url="https://example.com", description="Go")

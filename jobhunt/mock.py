@@ -14,7 +14,8 @@ from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
 
-from .fetch import parse_greenhouse, parse_lever, parse_ashby, Job
+from .fetch import (parse_greenhouse, parse_lever, parse_ashby, parse_smartrecruiters,
+                    smartrecruiters_description, Job)
 
 
 def _ago(days: int) -> datetime:
@@ -34,6 +35,9 @@ def _lever(days: int) -> int:
 
 def _ashby(days: int) -> str:
     return _ago(days).strftime("%Y-%m-%dT%H:%M:%S.000Z")
+
+
+_sr = _ashby   # SmartRecruiters releasedDate uses the same ISO-with-millis shape
 
 
 STALE_DAYS = 280   # comfortably past any sane max_age_days
@@ -92,11 +96,30 @@ GREENHOUSE = {
          "location": {"name": "Bengaluru, India"},
          "updated_at": _gh(1),
          "content": _BACKEND_JD + "<p>Java, Kafka, Postgres. Hybrid, 3 days in office.</p>"},
-        # junk: wrong discipline
+        # keeper: frontend is one of the target titles for a full-stack profile
         {"id": 7702002, "title": "Frontend Engineer, Design Systems",
          "absolute_url": "https://boards.greenhouse.io/novapay/jobs/7702002",
          "location": {"name": "Bengaluru, India"},
          "updated_at": _gh(2), "content": _FRONTEND_JD},
+        # junk: remote, but pinned to another country
+        {"id": 7702003, "title": "Software Engineer, Ledger",
+         "absolute_url": "https://boards.greenhouse.io/novapay/jobs/7702003",
+         "location": {"name": "Remote - US"},
+         "updated_at": _gh(1), "content": _BACKEND_JD},
+        # keeper: abroad, but the JD offers a visa and relocation
+        {"id": 7702004, "title": "Backend Engineer, Cards",
+         "absolute_url": "https://boards.greenhouse.io/novapay/jobs/7702004",
+         "location": {"name": "London, UK"},
+         "updated_at": _gh(1),
+         "content": _BACKEND_JD + "<p>We offer visa sponsorship and a relocation "
+                                  "package for candidates moving to London.</p>"},
+        # junk: right title and city, but the JD asks for far more experience
+        {"id": 7702005, "title": "Software Engineer, Risk",
+         "absolute_url": "https://boards.greenhouse.io/novapay/jobs/7702005",
+         "location": {"name": "Bengaluru, India"},
+         "updated_at": _gh(1),
+         "content": "<p>Build our fraud rules engine.</p><ul><li>6+ years of "
+                    "professional software engineering experience</li></ul>"},
     ]},
 }
 
@@ -166,6 +189,49 @@ ASHBY = {
 }
 
 
+# SmartRecruiters: the list endpoint carries no JD. It lives on the per-posting
+# detail endpoint, keyed here by posting id (see fetch.hydrate).
+SMARTRECRUITERS = {
+    "kitepay": {"offset": 0, "limit": 100, "totalFound": 3, "content": [
+        # keeper: "Developer", not "Engineer" — the wording Indian boards use.
+        # fullLocation with no region really does ship as "City, , Country".
+        {"id": "744000100000001", "name": "Full Stack Developer",
+         "company": {"identifier": "Kitepay", "name": "Kitepay"},
+         "releasedDate": _sr(1), "visibility": "PUBLIC",
+         "location": {"city": "Hyderabad", "country": "in", "remote": False,
+                      "fullLocation": "Hyderabad, , India"}},
+        # junk: level III at a new-grad profile
+        {"id": "744000100000002", "name": "SDE III - Backend",
+         "company": {"identifier": "Kitepay", "name": "Kitepay"},
+         "releasedDate": _sr(2), "visibility": "PUBLIC",
+         "location": {"city": "Bengaluru", "region": "KA", "country": "in",
+                      "remote": False, "fullLocation": "Bengaluru, KA, India"}},
+        # junk: enterprise-platform "developer", not software engineering
+        {"id": "744000100000003", "name": "SAP ABAP Developer",
+         "company": {"identifier": "Kitepay", "name": "Kitepay"},
+         "releasedDate": _sr(1), "visibility": "PUBLIC",
+         "location": {"city": "Pune", "region": "MH", "country": "in",
+                      "remote": True, "fullLocation": "Pune, MH, India"}},
+    ]},
+}
+
+SMARTRECRUITERS_DETAIL = {
+    "744000100000001": {"id": "744000100000001", "name": "Full Stack Developer",
+        "jobAd": {"sections": {
+            "companyDescription": {"title": "Company Description",
+                                   "text": "<p>Kitepay runs UPI rails for 3M merchants.</p>"},
+            "jobDescription": {"title": "Job Description",
+                               "text": "<p>Ship merchant dashboards in Next.js and the "
+                                       "Node.js/Postgres APIs behind them.</p>"},
+            "qualifications": {"title": "Qualifications",
+                               "text": "<ul><li>0-2 years with TypeScript and React</li>"
+                                       "<li>Comfort with SQL and Redis</li></ul>"},
+            "additionalInformation": {"title": "Additional Information",
+                                      "text": "<p>Hybrid, 3 days a week in Hyderabad.</p>"},
+        }}},
+}
+
+
 def fetch_all_mock(companies=None) -> list[Job]:
     jobs: list[Job] = []
     for slug, body in GREENHOUSE.items():
@@ -174,5 +240,12 @@ def fetch_all_mock(companies=None) -> list[Job]:
         jobs += parse_lever(slug, slug.title(), body)
     for slug, body in ASHBY.items():
         jobs += parse_ashby(slug, slug.title(), body)
-    print(f"  [mock] {len(jobs)} postings from {len(GREENHOUSE) + len(LEVER) + len(ASHBY)} boards")
+    for slug, body in SMARTRECRUITERS.items():
+        for j in parse_smartrecruiters(slug, slug.title(), body):
+            # what fetch.hydrate does over HTTP for the real boards
+            j.description = smartrecruiters_description(
+                SMARTRECRUITERS_DETAIL.get(j.job_id.split(":", 2)[2]))
+            jobs.append(j)
+    boards = len(GREENHOUSE) + len(LEVER) + len(ASHBY) + len(SMARTRECRUITERS)
+    print(f"  [mock] {len(jobs)} postings from {boards} boards")
     return jobs

@@ -1,19 +1,24 @@
 # Boards to poll. One entry per company.
 #
-#   ats:   greenhouse | lever | ashby
+#   ats:   greenhouse | lever | ashby | smartrecruiters
 #   slug:  the company's board identifier (NOT its domain)
 #   name:  whatever you want to see in the digest
+#   country: optional, smartrecruiters only — ISO code (e.g. in) that narrows
+#            the board server-side. Use it for giants like Bosch.
 #
 # The slug is the last path segment of the company's public careers board:
 #   https://boards.greenhouse.io/<slug>        -> ats: greenhouse
 #   https://jobs.lever.co/<slug>               -> ats: lever
 #   https://jobs.ashbyhq.com/<slug>            -> ats: ashby
+#   https://jobs.smartrecruiters.com/<slug>    -> ats: smartrecruiters
 #
 # THESE ARE EXAMPLES — verify each one before you trust the output. Companies
 # migrate between ATS vendors and slugs go dead. Check a slug in your browser:
 #   https://boards-api.greenhouse.io/v1/boards/<slug>/jobs?content=true
 #   https://api.lever.co/v0/postings/<slug>?mode=json
 #   https://api.ashbyhq.com/posting-api/job-board/<slug>?includeCompensation=true
+#   https://api.smartrecruiters.com/v1/companies/<slug>/postings
+# (SmartRecruiters answers an unknown slug with 200 and zero jobs, not 404.)
 #
 # A dead slug is not fatal: fetch_board prints the HTTP status and returns [],
 # so one bad entry never takes down the run. Watch the per-board job counts on
@@ -23,16 +28,156 @@
 # noise and makes the prefilter counts impossible to reason about.
 
 companies:
-  - {ats: greenhouse, slug: stripe,      name: Stripe}
-  - {ats: greenhouse, slug: databricks,  name: Databricks}
-  - {ats: greenhouse, slug: cloudflare,  name: Cloudflare}
-  - {ats: greenhouse, slug: figma,       name: Figma}
-  - {ats: greenhouse, slug: dropbox,     name: Dropbox}
-  - {ats: greenhouse, slug: coinbase,    name: Coinbase}
-  - {ats: greenhouse, slug: reddit,      name: Reddit}
-  - {ats: lever,      slug: voleon,      name: Voleon}
+  - {ats: ashby, slug: aiprise, name: AiPrise}
+  - {ats: ashby, slug: ontic, name: Ontic}
+  - {ats: ashby, slug: plane, name: Plane}
+  - {ats: ashby, slug: weave, name: Weave}
+  - {ats: ashby, slug: signoz, name: SigNoz}
+  - {ats: ashby, slug: junipersquare, name: Juniper Square}
+  - {ats: ashby, slug: hinge-health, name: Hinge Health}
+  - {ats: ashby, slug: handshake, name: Handshake}
+  - {ats: ashby, slug: certifyos, name: CertifyOS}
+  - {ats: ashby, slug: collinear-ai, name: Collinear AI}
+  - {ats: ashby, slug: coram-ai, name: Coram AI}
+  - {ats: ashby, slug: sarvam, name: Sarvam AI}
+  - {ats: ashby, slug: certa, name: Certa}
+  - {ats: ashby, slug: gainsight, name: Gainsight}
+  - {ats: ashby, slug: tilthq, name: Tilt}
+  - {ats: ashby, slug: parspec, name: Parspec}
+  - {ats: ashby, slug: stackone, name: StackOne}
+  - {ats: ashby, slug: gradera, name: Gradera}
+  - {ats: ashby, slug: bounce, name: Bounce}
+  - {ats: ashby, slug: tekion, name: Tekion}
+  - {ats: ashby, slug: ema, name: Ema}
+  - {ats: ashby, slug: bespokelabs, name: Bespoke Labs}
+  - {ats: ashby, slug: granica, name: Granica}
+  - {ats: ashby, slug: symmetry, name: Symmetry}
+  - {ats: ashby, slug: ramp, name: Ramp}
+  - {ats: ashby, slug: replit, name: Replit}
+  - {ats: ashby, slug: cursor, name: Cursor}
+  - {ats: ashby, slug: lovable, name: Lovable}
+  # added 2026-09-26: live boards with India openings
+  - {ats: ashby, slug: snowflake, name: Snowflake}
+  - {ats: ashby, slug: kong, name: Kong}
+  - {ats: ashby, slug: spotdraft, name: SpotDraft}
+  - {ats: ashby, slug: airwallex, name: Airwallex}
+  - {ats: ashby, slug: openai, name: OpenAI}
+  - {ats: ashby, slug: clickhouse, name: ClickHouse}
+  - {ats: ashby, slug: elevenlabs, name: ElevenLabs}
+  - {ats: ashby, slug: atlan, name: Atlan}
+  - {ats: ashby, slug: cerebras, name: Cerebras}
+  - {ats: ashby, slug: notion, name: Notion}
+  - {ats: ashby, slug: temporal, name: Temporal}
+  - {ats: ashby, slug: redis, name: Redis}
+  - {ats: ashby, slug: composio, name: Composio}
+  - {ats: ashby, slug: confluent, name: Confluent}
+  - {ats: ashby, slug: zapier, name: Zapier}
 
-  - {ats: ashby,      slug: openai,      name: OpenAI}
-  - {ats: ashby,      slug: ramp,        name: Ramp}
-  - {ats: ashby,      slug: linear,      name: Linear}
-  - {ats: ashby,      slug: vanta,       name: Vanta}
+  - {ats: greenhouse, slug: razorpaysoftwareprivatelimited, name: Razorpay}
+  - {ats: greenhouse, slug: druva, name: Druva}
+  - {ats: greenhouse, slug: inmobi, name: InMobi}
+  - {ats: greenhouse, slug: sigmoid, name: Sigmoid}
+  - {ats: greenhouse, slug: conga, name: Conga}
+  - {ats: greenhouse, slug: singlestore, name: SingleStore}
+  - {ats: greenhouse, slug: yugabyte, name: YugabyteDB}
+  - {ats: greenhouse, slug: simplisafe, name: SimpliSafe}
+  - {ats: greenhouse, slug: saucelabs, name: Sauce Labs}
+  - {ats: greenhouse, slug: sonicwall, name: SonicWall}
+  - {ats: greenhouse, slug: project44, name: project44}
+  - {ats: greenhouse, slug: instawork, name: Instawork}
+  - {ats: greenhouse, slug: techgrovebybanyansoftware, name: TechGrove by Banyan Software}
+  # added 2026-09-26: live boards with India openings
+  - {ats: greenhouse, slug: okta, name: Okta}
+  - {ats: greenhouse, slug: databricks, name: Databricks}
+  - {ats: greenhouse, slug: purestorage, name: Pure Storage}
+  - {ats: greenhouse, slug: mongodb, name: MongoDB}
+  - {ats: greenhouse, slug: zscaler, name: Zscaler}
+  - {ats: greenhouse, slug: highradius, name: HighRadius}
+  - {ats: greenhouse, slug: stripe, name: Stripe}
+  - {ats: greenhouse, slug: zetaglobal, name: Zeta Global}
+  - {ats: greenhouse, slug: rubrik, name: Rubrik}
+  - {ats: greenhouse, slug: gitlab, name: GitLab}
+  - {ats: greenhouse, slug: glance, name: Glance}
+  - {ats: greenhouse, slug: zenoti, name: Zenoti}
+  - {ats: greenhouse, slug: gleanwork, name: Glean}
+  - {ats: greenhouse, slug: netskope, name: Netskope}
+  - {ats: greenhouse, slug: squarepointcapital, name: Squarepoint}
+  - {ats: greenhouse, slug: devrev, name: DevRev}
+  - {ats: greenhouse, slug: graphcore, name: Graphcore}
+  - {ats: greenhouse, slug: harnessinc, name: Harness}
+  - {ats: greenhouse, slug: fivetran, name: Fivetran}
+  - {ats: greenhouse, slug: toast, name: Toast}
+  - {ats: greenhouse, slug: elastic, name: Elastic}
+  - {ats: greenhouse, slug: imc, name: IMC}
+  - {ats: greenhouse, slug: twilio, name: Twilio}
+  - {ats: greenhouse, slug: gravitonresearchcapital, name: Graviton}
+  - {ats: greenhouse, slug: towerresearchcapital, name: Tower Research}
+  - {ats: greenhouse, slug: coinbase, name: Coinbase}
+  - {ats: greenhouse, slug: newrelic, name: New Relic}
+  - {ats: greenhouse, slug: datadog, name: Datadog}
+  - {ats: greenhouse, slug: agoda, name: Agoda}
+  - {ats: greenhouse, slug: airbnb, name: Airbnb}
+  - {ats: greenhouse, slug: groww, name: Groww}
+  - {ats: greenhouse, slug: observeai, name: Observe.AI}
+  - {ats: greenhouse, slug: samsara, name: Samsara}
+  - {ats: greenhouse, slug: tenstorrent, name: Tenstorrent}
+  - {ats: greenhouse, slug: sambanovasystems, name: SambaNova}
+  - {ats: greenhouse, slug: sumologic, name: Sumo Logic}
+  - {ats: greenhouse, slug: aviatrix, name: Aviatrix}
+  - {ats: greenhouse, slug: startree, name: StarTree}
+  - {ats: greenhouse, slug: falconx, name: FalconX}
+  - {ats: greenhouse, slug: turing, name: Turing}
+  - {ats: greenhouse, slug: doordashusa, name: DoorDash}
+  - {ats: greenhouse, slug: anthropic, name: Anthropic}
+  - {ats: greenhouse, slug: mixpanel, name: Mixpanel}
+  - {ats: greenhouse, slug: chainguard, name: Chainguard}
+  - {ats: greenhouse, slug: amplitude, name: Amplitude}
+  - {ats: greenhouse, slug: fastly, name: Fastly}
+  - {ats: greenhouse, slug: vercel, name: Vercel}
+  - {ats: greenhouse, slug: grafanalabs, name: Grafana Labs}
+  - {ats: greenhouse, slug: minio, name: MinIO}
+  - {ats: greenhouse, slug: cloudflare, name: Cloudflare}
+  - {ats: greenhouse, slug: cockroachlabs, name: Cockroach Labs}
+
+  - {ats: lever, slug: cred, name: CRED}
+  - {ats: lever, slug: meesho, name: Meesho}
+  - {ats: lever, slug: mindtickle, name: Mindtickle}
+  - {ats: lever, slug: porter, name: Porter}
+  - {ats: lever, slug: levelai, name: Level AI}
+  - {ats: lever, slug: getwingapp, name: Wing Assistant}
+  - {ats: lever, slug: 3pillarglobal, name: 3Pillar Global}
+  - {ats: lever, slug: fieldnation, name: Field Nation}
+  - {ats: lever, slug: gohighlevel, name: HighLevel}
+  - {ats: lever, slug: everbridge, name: Everbridge}
+  - {ats: lever, slug: smart-working-solutions, name: Smart Working Solutions}
+  - {ats: lever, slug: drivetrain, name: Drivetrain}
+  - {ats: lever, slug: jumpcloud, name: JumpCloud}
+  - {ats: lever, slug: zimperium, name: Zimperium}
+  # added 2026-09-26: live boards with India openings
+  - {ats: lever, slug: paytm, name: Paytm}
+  - {ats: lever, slug: hevodata, name: Hevo Data}
+  - {ats: lever, slug: zeta, name: Zeta}
+  - {ats: lever, slug: fampay, name: FamPay}
+  - {ats: lever, slug: nium, name: Nium}
+  - {ats: lever, slug: epifi, name: Fi Money}
+  - {ats: lever, slug: pocketfm, name: Pocket FM}
+
+  - {ats: smartrecruiters, slug: boschgroup, name: Bosch, country: in}
+  - {ats: smartrecruiters, slug: swiggy, name: Swiggy}
+  - {ats: smartrecruiters, slug: servicenow, name: ServiceNow}
+  - {ats: smartrecruiters, slug: freshworks, name: Freshworks}
+  - {ats: smartrecruiters, slug: wise, name: Wise}
+  - {ats: smartrecruiters, slug: ixigo, name: ixigo}
+  - {ats: smartrecruiters, slug: grab, name: Grab}
+  - {ats: smartrecruiters, slug: canva, name: Canva}
+  - {ats: smartrecruiters, slug: hackerrank, name: HackerRank}
+  - {ats: smartrecruiters, slug: ubisoft2, name: Ubisoft}
+  - {ats: smartrecruiters, slug: unacademy, name: Unacademy}
+  - {ats: smartrecruiters, slug: instahyre, name: Instahyre}
+  - {ats: smartrecruiters, slug: whatfix, name: Whatfix}
+  - {ats: smartrecruiters, slug: upstox, name: Upstox}
+  - {ats: smartrecruiters, slug: cars24, name: Cars24}
+  - {ats: smartrecruiters, slug: lendingkart, name: Lendingkart}
+  - {ats: smartrecruiters, slug: turtlemint, name: Turtlemint}
+  - {ats: smartrecruiters, slug: loophealth, name: Loop Health}
+  - {ats: smartrecruiters, slug: interviewbit, name: InterviewBit}

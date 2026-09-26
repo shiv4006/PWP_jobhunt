@@ -66,6 +66,12 @@ careers board:
 | `boards.greenhouse.io/stripe` | `greenhouse` | `stripe` |
 | `jobs.lever.co/netlify` | `lever` | `netlify` |
 | `jobs.ashbyhq.com/ramp` | `ashby` | `ramp` |
+| `jobs.smartrecruiters.com/Swiggy` | `smartrecruiters` | `swiggy` |
+
+SmartRecruiters is where a lot of India hiring lives (Swiggy, Freshworks, Bosch,
+ServiceNow). An unknown SmartRecruiters slug returns 200 with zero jobs rather
+than a 404, so check the count. For huge boards add `country: in` to the entry
+to filter server-side.
 
 The shipped list is **examples** — verify each before trusting the output.
 Companies migrate between ATS vendors and slugs go dead. A dead slug prints an
@@ -75,8 +81,9 @@ counts on stdout: a board reporting 0 every day is a slug that needs fixing.
 Start with 10–15 companies. A list of 200 is mostly noise.
 
 **No LinkedIn or Naukri.** Neither has a public API and scraping them violates
-their terms of service. The three ATS endpoints above are documented, unauthenticated,
-and intended to be read.
+their terms of service. The four ATS endpoints above are documented, unauthenticated,
+and intended to be read. Workday, Keka and Darwinbox are left out on purpose: their
+careers pages run on private endpoints, not a published API.
 
 ### 2. Tune the filters
 
@@ -87,12 +94,21 @@ This is the whole cost story — get it right and you spend cents a day.
 filters:
   include_titles: ['\bsde\b', 'software development engineer', ...]
   exclude_titles: ['\b(staff|principal)\b', '\b(manager)\b', ...]
-  locations: [bangalore, bengaluru, india]
-  allow_remote: true
+  locations: [bangalore, bengaluru, india]   # home: any work mode passes
+  allow_remote: true                         # remote open to you (not "Remote - US")
+  remote_regions: [worldwide, global, anywhere, apac, asia]
+  abroad_needs_sponsorship: true             # on-site abroad needs visa/relocation in the JD
+  max_years_required: 3                      # drop "5+ years of experience" asks
   max_age_days: 30
-score_threshold: 7.0
-max_per_digest: 5
+score_threshold: 7.0   # every job at or above this is emailed, with a direct apply link
+max_drafts: 5          # full application kits only for the top N (the expensive call)
 ```
+
+Location is read from the job's location field, never from title adjectives,
+so "Distributed Systems Engineer, Belgrade" is not treated as remote. Matches are
+never dropped silently. A job whose screening batch failed isn't recorded, so it
+is retried next run. A match that wasn't emailed (send failed, or no `--send`)
+is carried into the next digest until it goes out.
 
 > **`sde` does not match "Software Development Engineer".** They share no
 > substring. Use `\bsde\b` for the acronym *and* list the spelled-out variants
@@ -229,6 +245,10 @@ role posted on two boards is still two rows, and a re-run never duplicates.
   `additionalPlain`; concatenate all four or you lose the requirements section
   and every job looks unqualified.
 - **Ashby** — skip `isListed: false`; those are unpublished drafts.
+- **SmartRecruiters** — the list pages at 100 and carries no JD. The JD is on
+  a per-posting detail endpoint, so `hydrate()` fetches it only for jobs that
+  survived the prefilter, not for every posting. `fullLocation` arrives as
+  `"Hyderabad, , India"` when there is no region; the parser tidies it.
 
 ---
 

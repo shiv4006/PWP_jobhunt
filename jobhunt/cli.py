@@ -15,9 +15,9 @@ import yaml
 
 from . import digest as digest_mod
 from . import llm, mailer
-from .fetch import fetch_all
+from .fetch import fetch_all, hydrate
 from .mock import fetch_all_mock
-from .prefilter import prefilter
+from .prefilter import jd_filter, prefilter
 from .providers import LLMError, resolve
 from .store import Store
 
@@ -115,12 +115,28 @@ def cmd_run(args) -> int:
     passed_filters = len(jobs)
     jobs = store.unseen(jobs)
     print(f"  new since last run: {len(jobs)}")
+    if not args.mock:
+        filled = hydrate(jobs)
+        if filled:
+            print(f"  fetched {filled} JDs from detail endpoints")
+    # The JD checks prefilter could not run on boards without a JD in the list.
+    jobs, dropped = jd_filter(jobs, filters)
+    if dropped:
+        store.record(dropped, emailed=False)   # checked once; never refetch these
     candidates = len(jobs)
     if args.limit:
         jobs = jobs[:args.limit]
         print(f"  --limit {args.limit} applied")
 
-    if not jobs:
+    threshold = float(cfg.get("score_threshold", 7.0))
+    max_drafts = int(cfg.get("max_drafts", cfg.get("max_per_digest", 5)))
+    # Matches from earlier runs that never made it to your inbox.
+    earlier = store.unsent_matches(threshold, filters.get("max_age_days", 30),
+                                   exclude={j.job_id for j in jobs})
+    if earlier:
+        print(f"  {len(earlier)} earlier match(es) not yet emailed — carrying them over")
+
+    if not jobs and not earlier:
         subject, doc = digest_mod.build([], scanned, 0, store.stats())
         path = digest_mod.write(doc, cfg.get("digest_file", "out/digest.html"))
         print(f"\nnothing new today. preview: {path}")
@@ -128,7 +144,9 @@ def cmd_run(args) -> int:
 
     # ---- 3. screen
     scorer = "keyword" if args.scorer == "keyword" else "llm"
-    if scorer == "keyword":
+    if not jobs:
+        print("\n[3/5] nothing new to screen")
+    elif scorer == "keyword":
         print(f"\n[3/5] screening {len(jobs)} jobs (keyword stub — DEV ONLY)")
         llm.keyword_screen(jobs, profile)
     else:
@@ -145,21 +163,22 @@ def cmd_run(args) -> int:
 
     # If every batch failed, the digest would be empty and — worse — we would
     # record these jobs as seen and never show them again. Bail instead.
-    if scorer == "llm" and not any(j.score is not None for j in jobs):
+    if jobs and scorer == "llm" and not any(j.score is not None for j in jobs):
         print("\n! screening scored nothing: every batch failed.\n"
               "  Not recording these jobs, so the next run retries them.\n"
               "  Check the warnings above (bad key, rate limit, wrong model id).")
         return 1
 
-    threshold = float(cfg.get("score_threshold", 7.0))
-    top_n = int(cfg.get("max_per_digest", 5))
-    shortlist = sorted([j for j in jobs if (j.score or 0) >= threshold],
-                       key=lambda j: j.score or 0, reverse=True)[:top_n]
-    print(f"  {len(shortlist)} scored >= {threshold}")
+    # Every match goes in the digest with its apply link. The cap only limits
+    # the expensive part: full application kits for the top few.
+    matches = sorted([j for j in jobs if (j.score or 0) >= threshold],
+                     key=lambda j: j.score or 0, reverse=True)
+    to_draft = matches[:max_drafts]
+    print(f"  {len(matches)} scored >= {threshold}")
 
     # ---- 4. draft
-    print(f"\n[4/5] drafting kits for {len(shortlist)}")
-    if not shortlist:
+    print(f"\n[4/5] drafting kits for the top {len(to_draft)} of {len(matches)}")
+    if not to_draft:
         print("  nothing cleared the threshold")
     elif scorer == "keyword" or args.no_draft:
         print("  skipped (keyword scorer / --no-draft)")
@@ -167,7 +186,7 @@ def cmd_run(args) -> int:
         try:
             provider, model = resolve("draft")
             print(f"  via {provider.name}/{model}")
-            llm.draft(shortlist, profile,
+            llm.draft(to_draft, profile,
                       jd_chars=int(cfg.get("draft_jd_chars", 6000)),
                       provider=provider, model=model)
         except LLMError as e:
@@ -175,7 +194,7 @@ def cmd_run(args) -> int:
 
     # ---- 5. digest
     print("\n[5/5] digest")
-    subject, doc = digest_mod.build(shortlist, scanned, candidates, store.stats())
+    subject, doc = digest_mod.build(matches, scanned, candidates, store.stats(), earlier=earlier)
     path = digest_mod.write(doc, cfg.get("digest_file", "out/digest.html"))
     print(f"  wrote {path}")
 
@@ -189,11 +208,21 @@ def cmd_run(args) -> int:
     else:
         print("  --send not passed, email skipped")
 
-    store.record(jobs, emailed=sent)
+    # A job whose screening batch failed has no score: leave it unrecorded so
+    # the next run screens it again instead of silently losing it. Matches only
+    # count as emailed once a send succeeds; until then they carry over.
+    scored = [j for j in jobs if j.score is not None]
+    if len(scored) < len(jobs):
+        print(f"  {len(jobs) - len(scored)} unscored job(s) left for the next run")
+    store.record(scored, emailed=False)
+    if sent:
+        store.mark_emailed([j.job_id for j in matches + earlier])
     csv_path = store.export_csv(cfg.get("tracker_csv", "out/tracker.csv"))
 
     print(f"\nfunnel: {scanned} scanned -> {passed_filters} passed filters "
-          f"-> {candidates} new -> {len(shortlist)} in digest")
+          f"-> {candidates} new -> {len(matches)} matches "
+          f"({sum(1 for j in to_draft if any((j.draft or {}).values()))} drafted)"
+          + (f" + {len(earlier)} carried over" if earlier else ""))
     print(f"subject: {subject}")
     print(f"tracker: {store.stats()}  ({csv_path})")
     return 0

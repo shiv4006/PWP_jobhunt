@@ -224,13 +224,15 @@ filters:
   exclude_titles:     # ...and none of these
     - '\b(staff|principal|senior)\b'    # drop levels you can't reach yet
     - '\b(sales|marketing|recruit)\b'
-  locations:          # matched against location + title
+  locations:          # whole words, matched against location + title
     - bangalore
     - bengaluru
-  allow_remote: true
+  allow_remote: true  # remote roles open to you; "Remote - US" is dropped
+  abroad_needs_sponsorship: true   # on-site abroad only if the JD offers a visa/relocation
+  max_years_required: 3            # drop JDs asking for more experience than this
   max_age_days: 30
-score_threshold: 7.0  # below this, no draft and no digest slot
-max_per_digest: 5
+score_threshold: 7.0  # every job at or above this lands in the email with an apply link
+max_drafts: 5         # full application kits for the top N only
 ```
 
 Two traps worth knowing:
@@ -255,10 +257,12 @@ board URL:
 | `boards.greenhouse.io/stripe` | `greenhouse` | `stripe` |
 | `jobs.lever.co/netlify` | `lever` | `netlify` |
 | `jobs.ashbyhq.com/ramp` | `ashby` | `ramp` |
+| `jobs.smartrecruiters.com/Swiggy` | `smartrecruiters` | `swiggy` |
 
 To find a company's board, search *"<company> careers greenhouse"* (or lever /
-ashby). If none of the three work, that company uses a different system and this
-tool can't read it — that's fine, move on.
+ashby / smartrecruiters). If none of the four work, that company uses a different
+system and this tool can't read it — that's fine, move on. A SmartRecruiters slug
+that doesn't exist shows 0 jobs instead of `HTTP 404`.
 
 Start with **10–15 companies you would actually join**. A list of 200 is noise.
 

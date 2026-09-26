@@ -43,7 +43,9 @@ def parse_json(raw: str) -> Any:
         raise ValueError("empty model reply")
     cleaned = _FENCE_CLOSE.sub("", _FENCE_OPEN.sub("", raw)).strip()
     try:
-        return json.loads(cleaned)
+        # strict=False: models put raw newlines inside strings, which strict
+        # JSON forbids but which lose nothing when accepted.
+        return json.loads(cleaned, strict=False)
     except json.JSONDecodeError:
         pass
     # Preamble before the payload, or trailing commentary after it.
@@ -54,10 +56,28 @@ def parse_json(raw: str) -> Any:
             candidates.append((i, cleaned[i:k + 1]))
     for _, blob in sorted(candidates):
         try:
-            return json.loads(blob)
+            return json.loads(blob, strict=False)
         except json.JSONDecodeError:
             continue
     raise ValueError(f"could not parse JSON from model reply: {cleaned[:300]!r}")
+
+
+def salvage_objects(raw: str | None) -> list[dict]:
+    """Every complete top-level-looking {...} object in a reply that does not
+    parse as a whole — typically an array cut off mid-object. Keeps the scores
+    that did arrive instead of discarding the batch."""
+    text, out, i = raw or "", [], 0
+    decoder = json.JSONDecoder(strict=False)
+    while (i := text.find("{", i)) != -1:
+        try:
+            obj, end = decoder.raw_decode(text, i)
+        except json.JSONDecodeError:
+            i += 1
+            continue
+        if isinstance(obj, dict):
+            out.append(obj)
+        i = end
+    return out
 
 
 def _as_list(payload: Any) -> list[dict]:
@@ -82,6 +102,8 @@ Return ONLY a JSON object, no prose, no markdown fences:
   "name": str,
   "current_title": str,
   "years_experience": number,
+  "based_in": str,             // country (and city if stated) they live in —
+                               // the screener uses it for jobs abroad
   "core_skills": [str],        // 10-20, most load-bearing first
   "domains": [str],            // e.g. "distributed systems", "CDN", "frontend"
   "notable_projects": [str],   // one line each, with impact if stated
@@ -143,12 +165,40 @@ Echo `job_id` back exactly as given. `reason` is one sentence, max 20 words,
 concrete about the deciding factor."""
 
 
+def _screen_call(batch: list[Job], profile_blob: str, jd_chars: int,
+                 provider: Provider, model: str) -> tuple[dict[str, dict], Exception | None]:
+    """One screening call -> ({job_id: result}, error). Never raises: a reply
+    that does not parse whole is salvaged object by object first."""
+    payload = [{
+        "job_id": j.job_id,
+        "company": j.company,
+        "title": j.title,
+        "location": j.location,
+        "description": j.description[:jd_chars],
+    } for j in batch]
+    raw, err = None, None
+    try:
+        raw = provider.complete(
+            model, SCREEN_SYSTEM,
+            f"CANDIDATE PROFILE:\n{profile_blob}\n\n"
+            f"JOBS:\n{json.dumps(payload, ensure_ascii=False)}",
+            SCREEN_MAX_TOKENS, json_mode=True,
+        )
+        rows = _as_list(parse_json(raw))
+    except (LLMError, ValueError, KeyError, TypeError) as e:
+        err, rows = e, salvage_objects(raw)
+    return {str(r["job_id"]): r for r in rows if r.get("job_id")}, err
+
+
 def screen(jobs: list[Job], profile: dict, batch_size: int = 8, jd_chars: int = 1400,
            provider: Provider | None = None, model: str | None = None) -> list[Job]:
     """Stage 1: score every surviving job. Mutates and returns `jobs`.
 
-    A batch that fails to parse logs a warning and is skipped — one bad reply
-    must not take down the whole run.
+    A reply that breaks keeps whatever complete scores it did contain, and the
+    jobs it left out get one more call on their own. Anything still unscored
+    after that keeps `score = None` — the CLI leaves those for the next run —
+    and one bad reply never takes down the whole run. Provider errors are not
+    re-asked here: the provider already retried them with backoff.
     """
     if provider is None or model is None:
         provider, model = resolve("screen")
@@ -157,30 +207,20 @@ def screen(jobs: list[Job], profile: dict, batch_size: int = 8, jd_chars: int = 
 
     for start in range(0, len(jobs), batch_size):
         batch = jobs[start:start + batch_size]
-        payload = [{
-            "job_id": j.job_id,
-            "company": j.company,
-            "title": j.title,
-            "location": j.location,
-            "description": j.description[:jd_chars],
-        } for j in batch]
-
         n = start // batch_size + 1
-        try:
-            raw = provider.complete(
-                model, SCREEN_SYSTEM,
-                f"CANDIDATE PROFILE:\n{profile_blob}\n\n"
-                f"JOBS:\n{json.dumps(payload, ensure_ascii=False)}",
-                SCREEN_MAX_TOKENS, json_mode=True,
-            )
-            results = {}
-            for r in _as_list(parse_json(raw)):
-                jid = r.get("job_id")
-                if jid:
-                    results[str(jid)] = r
-        except (LLMError, ValueError, KeyError, TypeError) as e:
-            print(f"  ! screen batch {n} failed ({type(e).__name__}: {e}) — skipping")
-            continue
+        results, err = _screen_call(batch, profile_blob, jd_chars, provider, model)
+
+        missing = [j for j in batch if j.job_id not in results]
+        if missing and not isinstance(err, LLMError):
+            print(f"  … screen batch {n}: {len(missing)} job(s) missing from the reply, asking again")
+            retry, retry_err = _screen_call(missing, profile_blob, jd_chars, provider, model)
+            results.update(retry)
+            err = retry_err or err
+            missing = [j for j in batch if j.job_id not in results]
+        if missing:
+            why = f"{type(err).__name__}: {err}" if err else "not in the reply"
+            print(f"  ! screen batch {n} failed for {len(missing)}/{len(batch)} job(s) "
+                  f"({why}) — skipping")
 
         for j in batch:
             r = results.get(j.job_id)

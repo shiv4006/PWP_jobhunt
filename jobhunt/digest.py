@@ -39,7 +39,51 @@ def _section(label: str, body: str) -> str:
             f'text-transform:uppercase;font-weight:700;">{label}</div>{body}</div>')
 
 
+def _links(j: Job) -> str:
+    """Apply goes straight to the application form; the posting link is there
+    for reading the JD first. Every card gets both, drafted or not."""
+    apply_href = j.apply_url or j.url
+    view = ""
+    if j.url and j.url != apply_href:
+        view = (f'<a href="{html.escape(j.url)}" style="color:{ACCENT};font-size:13px;'
+                f'margin-left:12px;text-decoration:none;">View posting</a>')
+    return f"""<div style="margin-top:14px;">
+    <a href="{html.escape(apply_href)}" style="display:inline-block;background:{ACCENT};
+       color:#0f1115;font-weight:700;font-size:14px;text-decoration:none;
+       padding:10px 18px;border-radius:8px;">Apply →</a>{view}
+    <div style="color:{MUTED};font-size:11px;margin-top:6px;">{html.escape(j.job_id)}</div>
+  </div>"""
+
+
+def _has_kit(j: Job) -> bool:
+    return any((j.draft or {}).values())
+
+
+def _compact(j: Job) -> str:
+    """A match without a drafted kit: title, score, one-line reason, apply."""
+    meta = " · ".join(x for x in [j.company, j.location or "—"] if x)
+    reason = (f'<div style="color:{TEXT};font-size:13px;line-height:1.5;margin-top:6px;">'
+              f'{html.escape(j.reason)}</div>') if j.reason else ""
+    return f"""
+<div style="background:{CARD};border:1px solid {LINE};border-radius:12px;padding:14px 18px;margin-bottom:10px;">
+  <div style="display:flex;justify-content:space-between;align-items:flex-start;">
+    <div style="font-size:15px;font-weight:700;color:{TEXT};">{html.escape(j.title)}</div>
+    <div style="padding-left:12px;">{_badge(j.score)}</div>
+  </div>
+  <div style="color:{MUTED};font-size:13px;margin-top:4px;">{html.escape(meta)}</div>
+  {reason}
+  {_links(j)}
+</div>"""
+
+
+def _heading(text: str) -> str:
+    return (f'<div style="color:{MUTED};font-size:12px;letter-spacing:.09em;text-transform:uppercase;'
+            f'font-weight:700;margin:22px 0 10px 0;">{html.escape(text)}</div>')
+
+
 def _card(j: Job) -> str:
+    if not _has_kit(j):
+        return _compact(j)
     d = j.draft or {}
     meta = " · ".join(x for x in [j.company, j.location or "—", j.ats] if x)
 
@@ -67,22 +111,32 @@ def _card(j: Job) -> str:
   {_section("Honest gaps", _bullets(d.get("gaps", [])))}
   {cover_html}
   {_section("Ask them", _bullets(d.get("questions_to_ask", [])))}
-  <div style="margin-top:16px;">
-    <a href="{html.escape(j.url)}" style="display:inline-block;background:{ACCENT};
-       color:#0f1115;font-weight:700;font-size:14px;text-decoration:none;
-       padding:10px 18px;border-radius:8px;">Open &amp; apply →</a>
-    <span style="color:{MUTED};font-size:11px;margin-left:10px;">{html.escape(j.job_id)}</span>
-  </div>
+  {_links(j)}
 </div>"""
 
 
-def build(jobs: list[Job], scanned: int, candidates: int, stats: dict) -> tuple[str, str]:
+def build(jobs: list[Job], scanned: int, candidates: int, stats: dict,
+          earlier: list[Job] | None = None) -> tuple[str, str]:
+    """`jobs` is EVERY match from this run, best first — drafted ones render as
+    full kits, the rest as compact cards, all with an apply link. `earlier` is
+    matches from past runs that never got emailed."""
+    earlier = earlier or []
     today = datetime.now().strftime("%d %b %Y")
-    subject = (f"{len(jobs)} job{'s' if len(jobs) != 1 else ''} worth your time — {today}"
-               if jobs else f"No new matches today — {today}")
+    total = len(jobs) + len(earlier)
+    subject = (f"{total} job{'s' if total != 1 else ''} worth your time — {today}"
+               if total else f"No new matches today — {today}")
 
-    if jobs:
-        body = "".join(_card(j) for j in jobs)
+    if total:
+        kits = [j for j in jobs if _has_kit(j)]
+        rest = [j for j in jobs if not _has_kit(j)]
+        body = "".join(_card(j) for j in kits)
+        if rest:
+            if kits:
+                body += _heading(f"More matches ({len(rest)})")
+            body += "".join(_compact(j) for j in rest)
+        if earlier:
+            body += _heading(f"Still open from earlier runs ({len(earlier)})")
+            body += "".join(_compact(j) for j in earlier)
     else:
         body = (f'<div style="background:{CARD};border:1px solid {LINE};border-radius:12px;'
                 f'padding:24px;color:{MUTED};font-size:14px;">Scanned {scanned} postings, '
@@ -94,7 +148,7 @@ font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;">
   <div style="color:{TEXT};font-size:22px;font-weight:800;">Your job digest</div>
   <div style="color:{MUTED};font-size:13px;margin:6px 0 20px 0;">
     {today} · scanned {scanned} postings · {candidates} passed filters ·
-    {len(jobs)} made the cut<br>
+    {len(jobs)} new match{'es' if len(jobs) != 1 else ''}<br>
     tracker: {stats.get('tracked', 0)} seen · {stats.get('applied', 0)} applied
   </div>
   {body}

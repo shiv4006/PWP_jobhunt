@@ -14,11 +14,48 @@ from __future__ import annotations
 
 import base64
 import os
+import time
 from typing import Any
 
 import requests
 
 TIMEOUT = 120
+
+# Errors that clear up on their own: rate limits, "model overloaded" 503s,
+# gateway blips. Retried with backoff; anything else fails fast.
+RETRY_STATUS = {429, 500, 502, 503, 504}
+RETRY_WAITS = (2, 8, 20)   # seconds between attempts; ~30s worst case per call
+MAX_RETRY_AFTER = 60
+
+
+def _retry_after(r: requests.Response) -> float | None:
+    try:
+        return min(float(r.headers.get("Retry-After", "")), MAX_RETRY_AFTER)
+    except ValueError:
+        return None
+
+
+def post_with_retry(label: str, url: str, **kwargs) -> requests.Response:
+    """requests.post that rides out transient failures, then hands back the
+    last response (the caller reports the status). A network error that
+    outlives every retry becomes an LLMError, so a stage's per-batch error
+    handling catches it instead of the whole run crashing."""
+    kwargs.setdefault("timeout", TIMEOUT)
+    for wait in (*RETRY_WAITS, None):
+        try:
+            r = requests.post(url, **kwargs)
+        except (requests.ConnectionError, requests.Timeout) as e:
+            if wait is None:
+                raise LLMError(f"{label} unreachable: {type(e).__name__}: {e}") from e
+            why = type(e).__name__
+        else:
+            if r.status_code not in RETRY_STATUS or wait is None:
+                return r
+            why = f"HTTP {r.status_code}"
+            wait = _retry_after(r) or wait
+        print(f"  … {label} {why}, retrying in {wait:g}s")
+        time.sleep(wait)
+    raise AssertionError("unreachable")
 
 
 class LLMError(RuntimeError):
@@ -125,11 +162,11 @@ class GeminiProvider(Provider):
     BASE = "https://generativelanguage.googleapis.com/v1beta/models"
 
     def _post(self, model: str, body: dict) -> str:
-        r = requests.post(
+        r = post_with_retry(
+            "gemini",
             f"{self.BASE}/{model}:generateContent",
             params={"key": self._env("GEMINI_API_KEY")},
             json=body,
-            timeout=TIMEOUT,
         )
         if r.status_code != 200:
             raise LLMError(f"gemini HTTP {r.status_code}: {r.text[:300]}")
@@ -196,11 +233,11 @@ class OpenAICompatProvider(Provider):
                                    "max_tokens": max_tokens, "temperature": 0.2}
         if json_mode:
             payload["response_format"] = {"type": "json_object"}
-        r = requests.post(
+        r = post_with_retry(
+            self.name,
             f"{base}/chat/completions",
             headers={"Authorization": f"Bearer {self._env(self.key_env)}"},
             json=payload,
-            timeout=TIMEOUT,
         )
         if r.status_code != 200:
             raise LLMError(f"{self.name} HTTP {r.status_code}: {r.text[:300]}")
